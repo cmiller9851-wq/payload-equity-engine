@@ -86,7 +86,7 @@ class Multivector:
         scale = 1.0 / math.sqrt(ns)
         return Multivector(tuple(x * scale for x in self._c))
 
-    def extract_vector(() -> Vector3D:
+    def extract_vector(self) -> Vector3D:
         return Vector3D(x=self._c[1], y=self._c[2], z=self._c[3])
 
     def to_rotor_dict(self) -> Dict[str, float]:
