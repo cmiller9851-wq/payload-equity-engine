@@ -429,3 +429,93 @@ if __name__ == "__main__":
     print("\n=== NON-ENTAILMENT CHECK ===")
     for warning in matrix.implication_error_check():
         print(f" - {warning}")
+
+
+# Pytest checks for the evidence and persistence rules above.
+def _definition(**overrides):
+    values = {
+        "pattern_id": "pattern-1",
+        "handle": "intervention",
+        "metric": "effect-size",
+        "baseline": "matched-control",
+        "cue_removed": True,
+        "emitted_tokens_deleted": True,
+        "matched_control": True,
+    }
+    values.update(overrides)
+    return ExperimentDefinition(**values)
+
+
+def test_persistence_passes_when_effect_decay_and_controls_meet_thresholds():
+    window = PersistenceWindow(k_min=1, k_max=2, epsilon=0.7, delta=0.2)
+    measurements = [
+        Measurement(k=0, t="train", c="ctx", s="form", delta_y=0.1),
+        Measurement(k=1, t="train", c="ctx", s="form", delta_y=0.8),
+        Measurement(k=2, t="train", c="ctx", s="form", delta_y=0.7),
+        Measurement(k=3, t="train", c="ctx", s="form", delta_y=0.0),
+    ]
+
+    result = evaluate_persistence(_definition(), measurements, window)
+
+    assert result.supported is True
+    assert result.n_measurements == 2
+    assert result.minimum_effect == 0.7
+    assert result.maximum_decay <= window.delta
+
+
+def test_causal_persistence_requires_all_controls():
+    measurements = [
+        Measurement(k=1, t="train", c="ctx", s="form", delta_y=0.8),
+        Measurement(k=2, t="train", c="ctx", s="form", delta_y=0.75),
+    ]
+    result = evaluate_persistence(
+        _definition(matched_control=False),
+        measurements,
+        PersistenceWindow(k_min=1, k_max=2, epsilon=0.7, delta=0.1),
+    )
+
+    assert result.effect_pass is True
+    assert result.decay_pass is True
+    assert result.supported is False
+    assert any("Matched counterfactual control" in reason for reason in result.reasons)
+
+
+def test_empty_window_is_not_supported():
+    result = evaluate_persistence(
+        _definition(),
+        [Measurement(k=1, t="train", c="ctx", s="form", delta_y=1.0)],
+        PersistenceWindow(k_min=2, k_max=3, epsilon=0.1, delta=1.0),
+    )
+
+    assert result.supported is False
+    assert result.n_measurements == 0
+    assert math.isnan(result.minimum_effect)
+
+
+def test_window_validation_rejects_empty_or_negative_ranges():
+    invalid_windows = [
+        PersistenceWindow(k_min=-1, k_max=1),
+        PersistenceWindow(k_min=1, k_max=1),
+        PersistenceWindow(k_min=0, k_max=1, epsilon=-0.1),
+        PersistenceWindow(k_min=0, k_max=1, delta=-0.1),
+    ]
+
+    for window in invalid_windows:
+        try:
+            window.validate()
+        except ValueError:
+            continue
+        raise AssertionError(f"Expected invalid window to be rejected: {window}")
+
+
+def test_grade_uses_highest_verified_persistence_level():
+    result = evaluate_persistence(
+        _definition(),
+        [Measurement(k=1, t="train", c="ctx", s="form", delta_y=0.8)],
+        PersistenceWindow(k_min=1, k_max=2, epsilon=0.5, delta=1.0),
+        proposition=Proposition.P1_CORPUS,
+    )
+
+    assert assign_grade(result) is PersistenceGrade.LOCAL
+    assert assign_grade(result, context_shift_verified=True) is PersistenceGrade.CROSS_CONTEXT
+    assert assign_grade(result, allocation_verified=True, external_resource_verified=True) is PersistenceGrade.EXTERNAL
